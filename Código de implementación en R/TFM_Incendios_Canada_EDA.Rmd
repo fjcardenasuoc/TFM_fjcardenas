@@ -1,0 +1,458 @@
+---
+title: "Trabajo Final de Máster: El análisis del fuego perfecto."
+author: "Autor: Francisco Jesús Cárdenas Ruiz"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libraries, include=FALSE}
+library(knitr)
+library(dplyr)
+library(sjmisc)
+library(VIM)
+library(ggplot2)
+library(gridExtra)
+library(psych)
+library(readr)
+library(readxl)
+library(writexl)
+library(sp)
+library(sf)
+library(cluster)
+library(grid)
+library(gmodels)
+library(caret)
+library(rpart)
+library(C50)
+library(leaflet)
+library(reshape2)
+```
+
+******
+# 1. Carga del archivo.
+******
+
+```{r}
+# Leemos el fichero de los incendios en Canadá en formato .csv y tratamos los
+# registros vacíos como NAs.
+data <- read.csv('fp-historical-wildfire-data-2006-2021.csv', header=TRUE, 
+                 sep=';', quote = "\"", na.strings = "")
+
+# Mostramos el número de filas y columnas.
+dim(data)
+```
+
+******
+# 2. Primeras transformaciones.
+******
+
+```{r}
+# Seleccionamos las variables del estudio.
+columnas_estudio <- c(
+  "fire_year", "fire_number", "current_size", "size_class", 
+  "fire_location_latitude", "fire_location_longitude", "fire_origin", 
+  "general_cause_desc", "fire_start_date", "det_agent", "reported_date",
+  "fire_spread_rate", "fire_type", "fire_position_on_slope",
+  "weather_conditions_over_fire", "temperature", "relative_humidity",
+  "wind_speed", "bucketing_on_fire", "ex_fs_date", "ex_hectares")
+
+# Creamos un nuevo dataframe con las columnas del estudio.
+data_TFM <- data[, columnas_estudio]
+
+# Pasamos los campos de fechas a su formato adecuado.
+data_TFM <- data_TFM %>%
+  mutate(
+    fire_start_date = as.POSIXct(fire_start_date, format = "%d/%m/%Y %H:%M"),
+    reported_date = as.POSIXct(reported_date, format = "%d/%m/%Y %H:%M"),
+    ex_fs_date = as.POSIXct(ex_fs_date, format = "%d/%m/%Y %H:%M"))
+```
+
+```{r}
+# Convertimos los datos cualitativos a factor.
+data_TFM$size_class <- as.factor(data_TFM$size_class)
+data_TFM$fire_origin <- as.factor(data_TFM$fire_origin)
+data_TFM$general_cause_desc <- as.factor(data_TFM$general_cause_desc)
+data_TFM$fire_type <- as.factor(data_TFM$fire_type)
+data_TFM$fire_position_on_slope <- as.factor(data_TFM$fire_position_on_slope)
+data_TFM$weather_conditions_over_fire <- 
+  as.factor(data_TFM$weather_conditions_over_fire)
+
+# Mostramos la estructura del nuevo conjunto de datos.
+str(data_TFM)
+
+# Y un resumen del dataset.
+summary(data_TFM)
+```
+
+******
+# 3. Normalización de las variables cualitativas.
+******
+
+```{r}
+# Conversión a character para poder hacer el tratamiento oportuno en fire_type.
+data_TFM$fire_type <- as.character(data_TFM$fire_type)
+
+# Eliminamos los espacios en blanco de la variable fire_type.
+data_TFM$fire_type[data_TFM$fire_type == "  "] <- NA
+data_TFM$fire_type <- gsub("\\s+", "", data_TFM$fire_type)
+
+# Conversión de nuevo a tipo factor y mostramos un nuevo resumen del campo.
+data_TFM$fire_type <- as.factor(data_TFM$fire_type)
+summary(data_TFM$fire_type)
+
+# Conversión a character para poder hacer el tratamiento oportuno 
+# en fire_position_on_slope.
+data_TFM$fire_position_on_slope <- as.character(data_TFM$fire_position_on_slope)
+
+# Cambios en los registros que vienen con Bottom o Flat, para unificarlos
+# en una sola categoría.
+data_TFM$fire_position_on_slope[grep(
+  "Bottom", data_TFM$fire_position_on_slope)] <- "Bottom Flat"
+data_TFM$fire_position_on_slope[grep(
+  "Flat", data_TFM$fire_position_on_slope)] <- "Bottom Flat"
+
+# Conversión de nuevo a tipo factor y mostramos un nuevo resumen del campo.
+data_TFM$fire_position_on_slope <- as.factor(data_TFM$fire_position_on_slope)
+summary(data_TFM$fire_position_on_slope)
+```
+
+******
+# 4. Normalización de las variables cuantitativas.
+******
+
+```{r}
+# Reemplazamos las comas por puntos en los campos necesarios.
+data_TFM$current_size <- gsub(",", ".", data_TFM$current_size)
+data_TFM$fire_spread_rate <- gsub(",", ".", data_TFM$fire_spread_rate)
+data_TFM$temperature <- gsub(",", ".", data_TFM$temperature)
+data_TFM$ex_hectares <- gsub(",", ".", data_TFM$ex_hectares)
+
+# Convertimos los campos a tipo numérico.
+data_TFM$current_size <- as.numeric(data_TFM$current_size)
+data_TFM$fire_spread_rate <- as.numeric(data_TFM$fire_spread_rate)
+data_TFM$temperature <- as.numeric(data_TFM$temperature)
+data_TFM$ex_hectares <- as.numeric(data_TFM$ex_hectares)
+```
+
+******
+# 5. Tratamiento de nulos.
+******
+
+```{r}
+# Mostramos la estructura del nuevo conjunto de datos tratado.
+str(data_TFM)
+
+# Y un resumen del dataset.
+summary(data_TFM)
+
+# Observamos si el dataset presenta nulos en cada uno de los campos.
+colSums(is.na(data_TFM))
+```
+
+```{r}
+# Eliminamos las filas en las que no viene la fecha de inicio del fuego 
+# debidamente informada.
+data_TFM <- data_TFM[complete.cases(data_TFM$fire_start_date), ]
+
+# Aplicamos el mismo paso para las que no informan la velocidad del viento.
+data_TFM <- data_TFM[complete.cases(data_TFM$wind_speed), ]
+
+# Aplicamos el mismo paso para los que no tienen la humedad relativa informada.
+data_TFM <- data_TFM[complete.cases(data_TFM$relative_humidity), ]
+
+# Aplicamos el mismo paso para los que no tienen la fecha de reporte informada.
+data_TFM <- data_TFM[complete.cases(data_TFM$reported_date), ]
+
+# Transformamos los NAs del campo bucketing_on_fire a N, referentes a NO ha 
+# sido necesaria la intervención de un helicóptero.
+data_TFM$bucketing_on_fire <- replace(data_TFM$bucketing_on_fire, 
+                                      is.na(data_TFM$bucketing_on_fire), "N")
+
+# Observamos si después de estas acciones aún quedan valores a nulo.
+colSums(is.na(data_TFM))
+```
+
+******
+# 6. Imputación de valores con KNN.
+******
+
+```{r}
+# Imputamos los valores faltantes tomando como muestra las variables informadas.
+# Generamos un nuevo dataframe.
+data_TFM_imp <- kNN(data_TFM, 
+                    variable = c('fire_origin', 'fire_spread_rate', 
+                                 'fire_type', 'fire_position_on_slope', 
+                                 'weather_conditions_over_fire'),
+                    dist_var = c('current_size', 'size_class', 
+                                 'general_cause_desc', 'det_agent',
+                                 'temperature', 'relative_humidity', 
+                                 'wind_speed', 'bucketing_on_fire', 
+                                 'ex_fs_date'),
+                                 imp_var = FALSE, impNA = TRUE, k=9 )
+
+# Observamos si el conjunto queda listo con la gestión de nulos.
+colSums(is.na(data_TFM_imp))
+```
+
+******
+# 7. Valores atípicos
+******
+
+```{r}
+# Estudiamos la variable temperatura para detectar outliers.
+boxplot(data_TFM_imp$temperature, main="temperature")
+
+# Mostramos los valores que quedan fuera del gráfico de caja y bigotes 
+# para tomar una decisión sobre ellos.
+x <- boxplot.stats(data_TFM_imp$temperature)$out
+idx_temp <- which(data_TFM_imp$temperature %in% x)
+sort(data_TFM_imp$temperature[idx_temp])
+
+# Mostramos el número total de éstos.
+length(idx_temp)
+```
+
+```{r}
+# Estudiamos la variable humedad relativa para detectar outliers.
+boxplot(data_TFM_imp$relative_humidity, main="relative_humidity")
+```
+
+```{r}
+# Estudiamos la variable velocidad del viento para detectar outliers.
+boxplot(data_TFM_imp$wind_speed, main="wind_speed")
+
+# Mostramos los valores que quedan fuera del gráfico de caja y bigotes 
+# para tomar una decisión sobre ellos.
+x <- boxplot.stats(data_TFM_imp$wind_speed)$out
+idx_wind <- which(data_TFM_imp$wind_speed %in% x)
+sort(data_TFM_imp$wind_speed[idx_wind])
+
+# Mostramos el número total de éstos.
+length(idx_wind)
+```
+
+La decisión tomada es que en las 3 variables estudiadas los valores extremos 
+son completamente válidos y entran dentro de la normalidad, por lo que no se 
+evidencia ningún outliers.
+
+******
+# 8. Estudio descriptivo.
+******
+
+```{r}
+# Creamos un gráfico de barras con la distribución de los incendios por año.
+ggplot(data_TFM_imp, aes(x = as.factor(fire_year))) +
+  geom_bar() +
+  labs(title = "Distribución de incendios por año") +
+  xlab("Año") + ylab("Conteo") +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5) +
+  theme(axis.title = element_text(face = "italic", 
+                                  colour = "blue", size = rel(1)))
+```
+
+```{r}
+# Creamos un gráfico de barras con la distribución de los tipos de incendios.
+ggplot(data_TFM_imp, aes(x = size_class, fill = size_class)) + 
+  geom_bar(stat = "count", position = "stack") +
+  labs(title = "Distribución de los incendios por su magnitud:") +
+  xlab("Año") + ylab("Conteo") +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5) +
+  theme(axis.title = element_text(face = "italic", 
+                                  colour = "blue", size = rel(1)))
+```
+
+Se observa que los datos están muy desbalanceados hacía los incendios menores
+categorizados de tipo A y B. Alguno de estos tipos será susceptible de tratar 
+cuando se lancen las primeras predicciones del modelo.
+
+```{r}
+# Creamos un gráfico de barras con la distribución de los tipos de incendios
+# por año.
+ggplot(data_TFM_imp, aes(x = fire_year, fill = size_class)) + 
+  geom_bar(stat = "count", position = "stack") +
+  labs(title = "Distribución de los tamaños de incendio por año:") +
+  xlab("Año") + ylab("Conteo") +
+  theme(axis.title = element_text(face = "italic", 
+                                  colour = "blue", size = rel(1)))
+```
+
+```{r}
+# Creamos un dataframe con los datos de la causa de incendios.
+df_causa <- as.data.frame(summary(data_TFM_imp$general_cause_desc))
+colnames(df_causa)[1] <- "Frecuencia"
+
+# Ordenamos los datos por frecuencia y mostramos una tabla resumen.
+df_causa_ord <- df_causa %>% arrange(desc(Frecuencia))
+kable((df_causa_ord), caption="Causas de Incendios por frecuencia de sucesos")
+```
+
+```{r}
+# Representación gráfica de fire_type.
+pie(table(data_TFM_imp$fire_type), main="Tipos de propagación del fuego")
+
+# Representación gráfica de fire_position_on_slope
+pie(table(data_TFM_imp$fire_position_on_slope), 
+    main="Tipos de pendientes sobre las que avanza el incendio")
+
+```
+
+```{r}
+# Se muestra un análisis de las distintas correlaciones que existen entre 
+# las variables objetivo.
+heat <- data_TFM_imp[,c("current_size", "fire_spread_rate", "temperature", 
+                        "relative_humidity","wind_speed")]
+
+# Creación del mapa de calor.
+qplot(x=Var1, y=Var2, data=melt(cor(heat, use="p")), fill=value, geom="tile") +
+   theme(axis.text.x = element_text(angle = 90)) +
+   coord_fixed()
+```
+
+******
+# 9. Visualización geográfica.
+******
+
+```{r}
+# Reemplazamos las comas por puntos en los campos de coordenadas.
+data_TFM_imp$fire_location_latitude <- gsub(",", ".", 
+                                            data_TFM_imp$fire_location_latitude)
+data_TFM_imp$fire_location_longitude <- gsub(",", ".", 
+                                             data_TFM_imp$fire_location_longitude)
+
+# Convertimos la columna a tipo numérico.
+data_TFM_imp$fire_location_latitude <- as.numeric(data_TFM_imp$fire_location_latitude)
+data_TFM_imp$fire_location_longitude <- as.numeric(data_TFM_imp$fire_location_longitude)
+
+# Cargamos los datos geográficos.
+coordenadas <- data_TFM_imp[,c(5,6)]
+
+data_TFM_imp_geo <- SpatialPointsDataFrame(coordenadas, 
+                                           data_TFM_imp, 
+                                           proj4string = CRS("+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"))
+```
+
+```{r}
+# Creamos la paleta con los colores de cada tipo de incendio.
+pal <- colorFactor(c("darkblue", "blue", "yellow", "orange", "red"), domain = c("A", "B", "C", "D", "E"))
+
+# Se genera el mapa interactivo
+mapa <- leaflet(data = data_TFM_imp_geo) %>%
+  addTiles() %>%
+  addCircleMarkers(~fire_location_longitude, ~fire_location_latitude,
+                   radius =  ~ifelse(size_class  %in% c("D", "E"), 8, 4),
+                   color = ~pal(size_class),
+                   popup = ~as.character(size_class), 
+                   label = ~as.character(size_class),
+                   stroke = FALSE, fillOpacity = 4)
+
+# Mostramos el mapa interactivo
+# mapa
+```
+
+Hemos clasificado los puntos por colores, indicando a los fuegos mas intensos colores más cálidos y para los pequeños incendios colores fríos.
+Además, el indicador es el doble de grande para los incendios de mayores proporciones.
+
+******
+# 10. Modelo Predictivo.
+******
+
+```{r}
+# Nos quedamos con las variables necesarias para el estudio.
+df_superv <- data_TFM_imp[,c(4,8,15,16,17,18)]
+
+# Se desordena el conjunto de datos.
+set.seed(23)
+data_random <- df_superv[sample(nrow(df_superv)),]
+
+# Dividimos el dataset entre la variable clase y el resto de atributos.
+Y <- data_random[,1] 
+X <- data_random[,2:6] 
+```
+
+```{r}
+# Dividimos las filas de entrenamiento y test.
+indexes = sample(1:nrow(df_superv), size=floor((2/3)*nrow(df_superv)))
+trainX <- X[indexes,]
+trainY <- Y[indexes]
+testX <- X[-indexes,]
+testY <- Y[-indexes]
+```
+
+```{r}
+# Aplicamos el modelo C50.
+trainY = as.factor(trainY)
+model <- C50::C5.0(trainX, trainY, rules=TRUE )
+summary(model)
+```
+
+```{r}
+# A continuación comprobaremos la calidad del modelo usando el conjunto 
+# de datos de test.
+predicted_model <- predict(model, testX, type="class")
+print(sprintf("La precisión del modelo es: %.4f %%", 
+              100*sum(predicted_model == testY) / length(predicted_model)))
+```
+
+```{r}
+# Hacemos la matriz de confusión para analizar la calidad de la predicción.
+mat_conf <- table(testY, Predicted=predicted_model)
+mat_conf
+```
+
+```{r}
+# Vamos a eliminar los registros de los incendios menores y comprobar
+# si de esta forma mejora la precisión del modelo.
+data_TFM_imp_No_A <- subset(data_TFM_imp, size_class != 'A')
+```
+
+```{r}
+# Nos quedamos con las variables necesarias para el estudio, donde incorporamos
+# 2 variables nuevas.
+df_superv_2 <- data_TFM_imp_No_A[,c(4,8,13,14,15,16,17,18)]
+
+# Se desordena el conjunto de datos.
+set.seed(23)
+data_random_2 <- df_superv_2[sample(nrow(df_superv_2)),]
+
+# Dividimos el dataset entre la variable clase y el resto de atributos.
+Y_2 <- data_random_2[,1] 
+X_2 <- data_random_2[,2:8] 
+```
+
+```{r}
+# Dividimos las filas de entrenamiento y test.
+indexes = sample(1:nrow(df_superv_2), size=floor((2/3)*nrow(df_superv_2)))
+trainX_2 <- X_2[indexes,]
+trainY_2 <- Y_2[indexes]
+testX_2 <- X_2[-indexes,]
+testY_2 <- Y_2[-indexes]
+```
+
+```{r}
+# Aplicamos el modelo C50.
+trainY_2 = as.factor(trainY_2)
+model_2 <- C50::C5.0(trainX_2, trainY_2, rules=TRUE )
+summary(model_2)
+```
+
+```{r}
+# A continuación comprobaremos la calidad del modelo usando el conjunto 
+# de datos de test.
+predicted_model_2 <- predict(model_2, testX_2, type="class" )
+print(sprintf("La precisión del segundo modelo es: %.4f %%", 
+              100*sum(predicted_model_2 == testY_2) / length(predicted_model_2)))
+```
+
+```{r}
+# Hacemos la matriz de confusión para analizar la calidad de la predicción.
+mat_conf_2 <- table(testY_2, Predicted=predicted_model_2)
+mat_conf_2
+```
