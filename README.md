@@ -11,7 +11,7 @@ Por último, se hará una investigación y tratamiento de datos sobre incendios,
 
 ## Contenidos del repositorio
 
-En este repositorio encontraremos:
+En este repositorio se encuentran:
 
 - Forest_Fire_Project.ipynb: For the full project with narration.  
 - .ipynb_checkpoints: For previous versions of Forest_Fire_Project.ipynb.
