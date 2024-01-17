@@ -13,8 +13,9 @@ Por último, se hará una investigación y tratamiento de datos sobre incendios,
 
 En este repositorio se encuentran:
 
-- Forest_Fire_Project.ipynb: For the full project with narration.  
-- .ipynb_checkpoints: For previous versions of Forest_Fire_Project.ipynb.
+- Memoria_TFM_fjcardenas.pdf: Documento con toda la información del Trabajo Final de Máster en formato PDF. 
+- Mapa_interactivo_Tenerife.md: Aquí disponemos de la URL donde se aloja la visualización interactiva del incendio de Tenerife de 2023.
+- Código de implementación en R: Esta carpeta contiene el código de R en formato RMD, el fichero de salida en formato HTML y el fichero de datos original en formato CSV. Este fichero lo encontramos en el siguiente [Enlace](https://open.alberta.ca/opendata/wildfire-data).
 
 ## Referencias
 
